@@ -38,6 +38,9 @@ class CreditsState extends MusicBeatState
 		#end
 
 		var defaultList:Array<Array<String>> = [ //Name - Icon name - Description - Link - BG Color
+			["Team Fortress 2"],
+			["Soldier",		"",		"i love america",	"",	"BB2E2E"],
+			[""],
 			["Psych Engine Team"],
 			["Shadow Mario",		"shadowmario",		"Main Programmer and Head of Psych Engine",					"https://ko-fi.com/shadowmario",	"444444"],
 			["Riveren",				"riveren",			"Main Artist/Animator of Psych Engine",						"https://x.com/riverennn",			"14967B"],
@@ -173,9 +176,18 @@ class CreditsState extends MusicBeatState
 				}
 			}
 
-			if(controls.ACCEPT && (creditsStuff[curSelected][3] == null || creditsStuff[curSelected][3].length > 4)) {
+			if(controls.ACCEPT && (creditsStuff[curSelected][3] == null || creditsStuff[curSelected][3].length > 4)) 
+			{
 				CoolUtil.browserLoad(creditsStuff[curSelected][3]);
 			}
+
+			// TODO: Make this call/function the Substate
+			else if(controls.ACCEPT && (creditsStuff[curSelected][0] == "Soldier"))
+			{
+				trace("yeah this code functioned");
+				//this is a setup/test for a credits menu feature
+			}
+
 			if (controls.BACK)
 			{
 				FlxG.sound.play(Paths.sound('cancelMenu'));
@@ -275,5 +287,13 @@ class CreditsState extends MusicBeatState
 
 	private function unselectableCheck(num:Int):Bool {
 		return creditsStuff[num].length <= 1;
+	}
+}
+
+class CreditsSubstate extends MusicBeatSubstate
+{
+	override function create()
+	{
+		//empty
 	}
 }
