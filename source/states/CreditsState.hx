@@ -1,6 +1,10 @@
 package states;
 
 import objects.AttachedSprite;
+import objects.CustomBackdrop;
+import flixel.group.FlxSpriteGroup;
+import flixel.sound.FlxSound;
+import flixel.util.FlxTimer;
 
 class CreditsState extends MusicBeatState
 {
@@ -181,11 +185,11 @@ class CreditsState extends MusicBeatState
 				CoolUtil.browserLoad(creditsStuff[curSelected][3]);
 			}
 
-			// TODO: Make this call/function the Substate
+			// Soldier monologue
 			else if(controls.ACCEPT && (creditsStuff[curSelected][0] == "Soldier"))
 			{
-				trace("yeah this code functioned");
-				//this is a setup/test for a credits menu feature
+				persistentUpdate = false; // stops this menu from reading input under the substate
+				openSubState(new CreditsSubState());
 			}
 
 			if (controls.BACK)
@@ -214,6 +218,12 @@ class CreditsState extends MusicBeatState
 			}
 		}
 		super.update(elapsed);
+	}
+
+	override function closeSubState()
+	{
+		super.closeSubState();
+		persistentUpdate = true;
 	}
 
 	var moveTween:FlxTween = null;
@@ -290,10 +300,222 @@ class CreditsState extends MusicBeatState
 	}
 }
 
-class CreditsSubstate extends MusicBeatSubstate
+class CreditsSubState extends MusicBeatSubstate
 {
+	var bd:CustomBackdrop;
+	var monoPortrait:FlxSprite;
+	var monoPanel:FlxSpriteGroup;
+	var monoBox:FlxSprite;
+	var monoText:FlxText;
+	var monoSound:FlxSound;
+
+	var boxPad:Float = 30;   // gap between the box corner and the text
+	var maxTextW:Float;      // decided by the box width
+	var started:Bool = false;
+	var ending:Bool = false;
+
+	var monoDim:Float = 0.15;    // portrait brightness when silent (lower = more contrast)
+	var monoBright:Float = 0.15; // current (smoothed) brightness
+	var flutter:Float = 0.15;    // random per-frame shake on top of the voice (0 = off)
+	var monoGain:Float = 1.0;    // flicker strength (1 = full range, lower = subtler)
+	var portraitMult:Float = 1.25; // portrait size multiplier
+
+	// loudness of Soldier_taunts07.ogg, one value (0-1) every 40 ms
+	var envStep:Float = 40;
+	var voiceEnv:Array<Float> = [
+		0.04,0.25,0.33,0.26,0.10,0.00,0.00,0.00,0.25,0.60,0.80,0.88,0.90,0.90,0.85,0.74,0.58,
+		0.48,0.58,0.69,0.60,0.34,0.23,0.41,0.64,0.77,0.70,0.61,0.58,0.44,0.28,0.33,0.37,0.30,
+		0.27,0.45,0.64,0.64,0.51,0.40,0.51,0.75,0.87,0.81,0.70,0.55,0.32,0.16,0.26,0.42,0.46,
+		0.39,0.41,0.54,0.60,0.53,0.33,0.28,0.51,0.80,0.98,1.00,0.89,0.72,0.65,0.54,0.27,0.03,
+		0.11,0.34,0.50,0.59,0.73,0.76,0.69,0.68,0.69,0.72,0.74,0.74,0.65,0.58,0.66,0.68,0.50,
+		0.23,0.11,0.20,0.31,0.52,0.77,0.88,0.86,0.81,0.75,0.69,0.59,0.47,0.37,0.27,0.16,0.03
+	];
+
+	// each sentence = list of [startMs, "chunk"]; a chunk types in quickly when its time hits.
+	// times measured in Audacity (word starts, in ms)
+	var monoSentences:Array<Array<Dynamic>> = [
+		[[25, "If "], [370, "God "], [700, "had "], [945, "wanted "], [1225, "you "], [1400, "to "], [1625, "live,"]],
+		[[1925, "He "], [2110, "would "], [2360, "not "], [2525, "have "], [2745, "created "], [3475, "me!"]]
+	];
+	// timing helper: press SPACE while the clip plays and the time (ms) is printed bottom-left
+	var tapToTime:Bool = false; // set to true to log SPACE-press times on screen
+	var tapLog:String = "";
+	var debugText:FlxText;
+
+	var chunkTypeMs:Float = 140; // how long one chunk takes to type in (lower = snappier)
+
+	// built in create() from monoSentences
+	var sentWrapped:Array<String> = [];
+	var chunks:Array<{sent:Int, t:Float, s:Int, e:Int}> = [];
+
 	override function create()
 	{
-		//empty
+		bd = new CustomBackdrop(60, 45, 0xFF9D1717, 0);
+		bd.screenCenter();
+		add(bd);
+		bd.tweenAlpha(0.6, 1.5);
+
+		// portrait in the right half, scaled to fit, starts invisible and dim
+		monoPortrait = new FlxSprite().loadGraphic(Paths.image('credits/Clan_Pride'));
+		var fit:Float = Math.min((FlxG.width / 2 - 20) / monoPortrait.width, (FlxG.height - 20) / monoPortrait.height) * portraitMult;
+		monoPortrait.scale.set(fit, fit);
+		monoPortrait.updateHitbox();
+		monoPortrait.x = FlxG.width / 2 + (FlxG.width / 2 - monoPortrait.width) / 2; // right half
+		monoPortrait.y = FlxG.height - monoPortrait.height + 20; // bottom anchored, bleeds 20px off the bottom
+		monoPortrait.alpha = 0;
+		setBrightness(monoDim);
+		add(monoPortrait);
+
+		// panel group: members are positioned RELATIVE to the group
+		monoPanel = new FlxSpriteGroup(-FlxG.width / 2, 0); // starts offscreen left
+		monoPanel.scrollFactor.set(0, 0);
+
+		monoBox = new FlxSprite(0, 0);
+		monoBox.makeGraphic(Std.int(FlxG.width / 2), FlxG.height, FlxColor.BLACK);
+		monoPanel.add(monoBox);
+
+		maxTextW = monoBox.width - boxPad * 2;
+
+		monoText = new FlxText(boxPad, boxPad, maxTextW, "", 28);
+		monoText.setFormat(Paths.font('vcr.ttf'), 28, FlxColor.WHITE, LEFT);
+		monoPanel.add(monoText); // added after the box, so it draws on top
+		add(monoPanel);
+
+		debugText = new FlxText(10, FlxG.height - 70, FlxG.width / 2 - 20, "", 20);
+		debugText.visible = tapToTime;
+		add(debugText);
+
+		// pre-wrap every line using the box width
+		for (k in 0...monoSentences.length)
+		{
+			var raw:String = "";
+			for (c in monoSentences[k])
+			{
+				var txt:String = c[1];
+				chunks.push({sent: k, t: c[0], s: raw.length, e: raw.length + txt.length});
+				raw += txt;
+			}
+			sentWrapped.push(wrapToBox(raw)); // wrapping swaps spaces for \n, so character counts stay the same
+		}
+
+		// intro
+		FlxTween.tween(monoPanel, {x: 0}, 1, {ease: FlxEase.quartOut});
+		FlxTween.tween(monoPortrait, {alpha: 1}, 1);
+		FlxTween.tween(FlxG.sound.music, {volume: 0.15}, 0.4);
+
+		// start the voice once the box is mostly in
+		new FlxTimer().start(0.8, function(_) startMonologue());
+
+		super.create();
+	}
+
+	function setBrightness(v:Float)
+		monoPortrait.color = FlxColor.fromRGBFloat(v, v, v);
+
+	function wrapToBox(s:String):String
+	{
+		var m = new FlxText(0, 0, 0, "", 28); // width 0 = auto-size, so .width is the measured width
+		m.setFormat(Paths.font('vcr.ttf'), 28);
+
+		var out:String = "";
+		var line:String = "";
+		for (w in s.split(" "))
+		{
+			var test:String = (line == "") ? w : line + " " + w;
+			m.text = test;
+			if (m.width > maxTextW - 8 && line != "")
+			{
+				out += line + "\n";
+				line = w;
+			}
+			else line = test;
+		}
+		m.destroy();
+		return out + line;
+	}
+
+	function startMonologue()
+	{
+		if (ending) return;
+		monoSound = FlxG.sound.load(Paths.sound('Soldier_taunts07'));
+		monoSound.onComplete = endMonologue;
+		monoSound.play(true);
+		started = true;
+	}
+
+	function endMonologue()
+	{
+		if (ending) return;
+		ending = true;
+		started = false;
+		if (monoSound != null) monoSound.stop();
+
+		FlxTween.tween(FlxG.sound.music, {volume: 0.7}, 0.5);
+		FlxTween.tween(monoPanel, {x: -FlxG.width / 2}, 0.5, {ease: FlxEase.quartIn});
+		FlxTween.tween(monoPortrait, {alpha: 0}, 0.5);
+		bd.tweenAlpha(0, 0.5);
+
+		new FlxTimer().start(0.55, function(_) close());
+	}
+
+	override function update(elapsed:Float)
+	{
+		super.update(elapsed);
+		if (ending) return;
+
+		if (controls.BACK)
+		{
+			FlxG.sound.play(Paths.sound('cancelMenu'));
+			endMonologue();
+			return;
+		}
+
+		if (tapToTime && started && monoSound != null && FlxG.keys.justPressed.SPACE)
+		{
+			tapLog += Std.int(monoSound.time) + ", ";
+			debugText.text = tapLog;
+		}
+
+		if (started && monoSound != null && monoSound.playing)
+			updateMonologue(elapsed);
+	}
+
+	function updateMonologue(elapsed:Float)
+	{
+		var t:Float = monoSound.time;
+
+		// text: each chunk types in when its time hits, sentences stack on top of each other
+		var shown:String = "";
+		for (k in 0...sentWrapped.length)
+		{
+			var chars:Int = 0;
+			for (c in chunks)
+			{
+				if (c.sent != k || t < c.t) continue;
+				var p:Float = FlxMath.bound((t - c.t) / chunkTypeMs, 0, 1);
+				chars = c.s + Math.floor(p * (c.e - c.s));
+			}
+			if (chars > 0)
+				shown += (shown == "" ? "" : "\n") + sentWrapped[k].substr(0, chars);
+		}
+		if (monoText.text != shown) monoText.text = shown;
+
+		// flicker: brightness follows voice loudness
+		// (uses the precomputed envelope, so it doesn't depend on FlxSound.amplitude)
+		var pos:Float = Math.max(0, t / envStep);
+		var i0:Int = Std.int(Math.min(Math.floor(pos), voiceEnv.length - 1));
+		var i1:Int = Std.int(Math.min(i0 + 1, voiceEnv.length - 1));
+		var loud:Float = FlxMath.lerp(voiceEnv[i0], voiceEnv[i1], pos - Math.floor(pos));
+		var target:Float = monoDim + loud * monoGain * (1 - monoDim);
+		target += FlxG.random.float(-flutter, flutter) * loud; // shake only while he's talking
+		target = FlxMath.bound(target, monoDim, 1);
+		monoBright = FlxMath.lerp(monoBright, target, FlxMath.bound(elapsed * 45, 0, 1));
+		setBrightness(monoBright);
+	}
+
+	override function destroy()
+	{
+		if (monoSound != null) monoSound.stop();
+		super.destroy();
 	}
 }
